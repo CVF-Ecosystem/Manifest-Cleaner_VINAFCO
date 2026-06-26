@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+ENV/
+
+# Excel files and temp files (Manifest files containing sensitive port data)
+*.xls
+*.xlsx
+~$*.xls
+~$*.xlsx
+
+# Local log files and directory
+logs/
+*.log
+
+# Local app configuration
+app_config.json
+
+# PyInstaller / Build
+build/
+dist/
+*.exe
+
+# OS generated
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE and Agent files
+.vscode/
+.idea/
+.agents/
+.gemini/
