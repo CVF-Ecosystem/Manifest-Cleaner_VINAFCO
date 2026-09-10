@@ -118,10 +118,23 @@ class VinafcoExcelHandler:
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
         
-        # Determine engine based on file extension
-        engine = self.engine_xlsx if file_path.suffix.lower() == '.xlsx' else self.engine_xls
+        # Determine engine based on actual file content (magic bytes),
+        # not just extension - some .xls files are actually XLSX format
+        try:
+            with open(file_path, 'rb') as f:
+                magic = f.read(4)
+            is_xlsx_format = (magic == b'PK\x03\x04')  # ZIP/XLSX signature
+        except Exception:
+            is_xlsx_format = file_path.suffix.lower() in ('.xlsx', '.xlsm')
         
-        logger.info(f"Reading file: {file_path} with engine: {engine}")
+        if is_xlsx_format:
+            engine = self.engine_xlsx  # openpyxl
+            logger.info(f"Detected XLSX format (ZIP signature) for: {file_path.name}")
+        else:
+            engine = self.engine_xls   # xlrd
+            logger.info(f"Detected XLS format (OLE2) for: {file_path.name}")
+        
+        is_xlsx = is_xlsx_format  # used by fallback logic below
         
         # Peek at first rows to find header
         try:
@@ -134,14 +147,24 @@ class VinafcoExcelHandler:
                 engine=engine
             )
         except Exception as e:
-            logger.warning(f"Failed with engine {engine}: {e}, trying default")
-            df_peek = pd.read_excel(
-                file_path,
-                sheet_name=self.target_sheet,
-                header=None,
-                nrows=self.peek_rows,
-                keep_default_na=False
-            )
+            logger.warning(f"Failed with engine {engine}, sheet '{self.target_sheet}': {e}")
+            # Fallback: try with correct engine but first sheet (sheet_name=0)
+            fallback_engine = 'openpyxl' if is_xlsx else None
+            try:
+                df_peek = pd.read_excel(
+                    file_path,
+                    sheet_name=0,
+                    header=None,
+                    nrows=self.peek_rows,
+                    keep_default_na=False,
+                    engine=fallback_engine
+                )
+                logger.info("Fallback: reading first sheet succeeded")
+            except Exception as e2:
+                logger.error(f"Fallback also failed: {e2}")
+                raise ValueError(
+                    f"Cannot read Excel file. Original error: {e}"
+                ) from e2
         
         if progress_callback:
             progress_callback(5, "Finding header row...")
@@ -165,14 +188,25 @@ class VinafcoExcelHandler:
         if progress_callback:
             progress_callback(10, "Reading full data...")
         
-        # Read full data with header
-        df = pd.read_excel(
-            file_path,
-            sheet_name=self.target_sheet,
-            header=header_row_idx,
-            keep_default_na=False,
-            engine=engine
-        )
+        # Read full data with header - try named sheet first, then first sheet
+        try:
+            df = pd.read_excel(
+                file_path,
+                sheet_name=self.target_sheet,
+                header=header_row_idx,
+                keep_default_na=False,
+                engine=engine
+            )
+        except Exception as e:
+            logger.warning(f"Full read with sheet '{self.target_sheet}' failed: {e}, trying first sheet")
+            fallback_engine = 'openpyxl' if is_xlsx else None
+            df = pd.read_excel(
+                file_path,
+                sheet_name=0,
+                header=header_row_idx,
+                keep_default_na=False,
+                engine=fallback_engine
+            )
         
         # Normalize column names
         df.columns = [' '.join(re.sub(r'[\n\r\t]+', ' ', str(col)).split()).strip() 
@@ -180,15 +214,35 @@ class VinafcoExcelHandler:
         
         logger.info(f"Columns found: {df.columns.tolist()}")
         
-        # Verify required columns
+        # Verify required columns (with fuzzy matching for variations)
         required_cols = [
             self.col_party_raw, self.col_bill_no, self.col_container_no,
             self.col_seal, self.col_type, self.col_comm, self.col_gw, self.col_remarks
         ]
         missing = [col for col in required_cols if col not in df.columns]
         
+        # Try fuzzy matching for missing columns
+        # e.g., 'GW' matches 'GW (MT)', 'CONTAINER No.' matches 'CONTAINER No. 1'
         if missing:
-            raise ValueError(f"Missing required columns: {missing}")
+            rename_map = {}
+            still_missing = []
+            for expected_col in missing:
+                matched = False
+                for actual_col in df.columns:
+                    # Check if actual column starts with expected name
+                    if actual_col.upper().startswith(expected_col.upper()):
+                        rename_map[actual_col] = expected_col
+                        logger.info(f"Fuzzy column match: '{actual_col}' -> '{expected_col}'")
+                        matched = True
+                        break
+                if not matched:
+                    still_missing.append(expected_col)
+            
+            if rename_map:
+                df.rename(columns=rename_map, inplace=True)
+            
+            if still_missing:
+                raise ValueError(f"Missing required columns: {still_missing}")
         
         return df, header_row_idx
     

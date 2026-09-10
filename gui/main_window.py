@@ -964,7 +964,7 @@ class ManifestCleanerApp:
         
         try:
             handler = VinafcoExcelHandler(self.ini_config)
-            handler.write_excel(self.processed_df, output_path)
+            handler.save_excel(self.processed_df, Path(output_path))
             
             self.status_var.set(f"Đã lưu: {Path(output_path).name}")
             self.status_label.config(fg=COLORS["success"])
